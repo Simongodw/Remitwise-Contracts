@@ -48,7 +48,7 @@ const KEY_PAUSE_ADMIN: Symbol = symbol_short!("PAUSE_ADM");
 const KEY_NEXT_ID: Symbol = symbol_short!("NEXT_ID");
 const KEY_POLICIES: Symbol = symbol_short!("POLICIES");
 const KEY_OWNER_INDEX: Symbol = symbol_short!("OWN_IDX");
-/// Instance-storage key for the external-reference index. Holds a `Map<String, u32>` mapping each active `external_ref` string to its owning policy ID.
+/// Instance-storage key for the external-reference index. Holds a `Map<(Address, String), u32>` mapping each active `(owner, external_ref)` pair to its owning policy ID.
 const KEY_EXT_REF_IDX: Symbol = symbol_short!("EXT_IDX");
 
 // Event topic constants
@@ -180,38 +180,27 @@ impl Insurance {
         Ok(())
     }
 
-    /// Reads `KEY_EXT_REF_IDX` from instance storage and returns the policy ID
-    /// mapped to `ext_ref`, or `None` if no mapping exists.
-    fn ext_idx_get(env: &Env, ext_ref: &String) -> Option<u32> {
-        let idx: Map<String, u32> = env
-            .storage()
-            .instance()
-            .get(&KEY_EXT_REF_IDX)
-            .unwrap_or_else(|| Map::new(env));
-        idx.get(ext_ref.clone())
-    }
-
     /// Loads `KEY_EXT_REF_IDX` (or creates a new empty map), inserts the
-    /// `(ext_ref → policy_id)` mapping, and saves it back to instance storage.
-    fn ext_idx_insert(env: &Env, ext_ref: &String, policy_id: u32) {
-        let mut idx: Map<String, u32> = env
+    /// `((owner, ext_ref) → policy_id)` mapping, and saves it back to instance storage.
+    fn ext_idx_insert(env: &Env, owner: &Address, ext_ref: &String, policy_id: u32) {
+        let mut idx: Map<(Address, String), u32> = env
             .storage()
             .instance()
             .get(&KEY_EXT_REF_IDX)
             .unwrap_or_else(|| Map::new(env));
-        idx.set(ext_ref.clone(), policy_id);
+        idx.set((owner.clone(), ext_ref.clone()), policy_id);
         env.storage().instance().set(&KEY_EXT_REF_IDX, &idx);
     }
 
     /// Loads `KEY_EXT_REF_IDX` (or creates a new empty map), removes the entry
-    /// for `ext_ref`, and saves it back to instance storage.
-    fn ext_idx_remove(env: &Env, ext_ref: &String) {
-        let mut idx: Map<String, u32> = env
+    /// for `(owner, ext_ref)`, and saves it back to instance storage.
+    fn ext_idx_remove(env: &Env, owner: &Address, ext_ref: &String) {
+        let mut idx: Map<(Address, String), u32> = env
             .storage()
             .instance()
             .get(&KEY_EXT_REF_IDX)
             .unwrap_or_else(|| Map::new(env));
-        idx.remove(ext_ref.clone());
+        idx.remove((owner.clone(), ext_ref.clone()));
         env.storage().instance().set(&KEY_EXT_REF_IDX, &idx);
     }
 
@@ -338,7 +327,8 @@ impl Insurance {
         }
 
         if let Some(ref r) = external_ref {
-            if Self::ext_idx_get(&env, r).is_some() {
+            let index = Self::get_external_ref_index(&env);
+            if index.contains_key((owner.clone(), r.clone())) {
                 return Err(InsuranceError::DuplicateExternalRef);
             }
         }
@@ -379,7 +369,7 @@ impl Insurance {
         env.storage().instance().set(&KEY_OWNER_INDEX, &index);
 
         if let Some(ref r) = external_ref {
-            Self::ext_idx_insert(&env, r, next_id);
+            Self::ext_idx_insert(&env, &owner, r, next_id);
         }
 
         env.storage().instance().set(&KEY_NEXT_ID, &next_id);
@@ -472,7 +462,8 @@ impl Insurance {
 
         // Duplicate check: skip the current policy's own entry
         if let Some(ref r) = new_ref {
-            if let Some(existing_id) = Self::ext_idx_get(&env, r) {
+            let index = Self::get_external_ref_index(&env);
+            if let Some(existing_id) = index.get((caller.clone(), r.clone())) {
                 if existing_id != policy_id {
                     return Err(InsuranceError::DuplicateExternalRef);
                 }
@@ -483,12 +474,12 @@ impl Insurance {
 
         // Remove old entry from index
         if let Some(ref r) = old_ref {
-            Self::ext_idx_remove(&env, r);
+            Self::ext_idx_remove(&env, &caller, r);
         }
 
         // Insert new entry into index
         if let Some(ref r) = new_ref {
-            Self::ext_idx_insert(&env, r, policy_id);
+            Self::ext_idx_insert(&env, &caller, r, policy_id);
         }
 
         // Update policy record
@@ -530,7 +521,7 @@ impl Insurance {
         policies.set(policy_id, policy.clone());
         env.storage().instance().set(&KEY_POLICIES, &policies);
         if let Some(ref r) = policy.external_ref {
-            Self::ext_idx_remove(&env, r);
+            Self::ext_idx_remove(&env, &caller, r);
         }
         Ok(true)
     }
