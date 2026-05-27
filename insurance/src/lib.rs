@@ -92,15 +92,6 @@ pub struct PolicyDeactivatedEvent {
     pub timestamp: u64,
 }
 
-#[derive(Clone)]
-#[contracttype]
-pub struct ExternalRefUpdatedEvent {
-    pub policy_id: u32,
-    pub owner: Address,
-    pub external_ref: Option<String>,
-    pub timestamp: u64,
-}
-
 #[contracttype]
 #[derive(Clone)]
 pub struct InsurancePolicy {
