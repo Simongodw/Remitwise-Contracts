@@ -807,12 +807,6 @@ impl Insurance {
     }
 
     /// Returns a stable, cursor-based page of active policies for an owner.
-    pub fn get_active_policies(
-        env: Env,
-        owner: Address,
-        cursor: u32,
-        limit: u32,
-    ) -> PolicyPage {
     pub fn get_active_policies(env: Env, owner: Address, cursor: u32, limit: u32) -> PolicyPage {
         Self::extend_instance_ttl(&env);
         let limit = Self::clamp_limit(limit);
