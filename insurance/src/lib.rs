@@ -418,20 +418,6 @@ impl Insurance {
         policies.get(policy_id)
     }
 
-    /// Looks up the policy ID currently mapped to `ext_ref` in `EXT_IDX`.
-    ///
-    /// # Security invariant
-    /// This function only returns IDs for active policies. Entries are removed from `EXT_IDX`
-    /// when a policy is deactivated or archived, so this function will never return a stale ID.
-    ///
-    /// # Stability invariant
-    /// While a policy is active and its `external_ref` has not been changed, this function
-    /// returns the same `Some(policy_id)` on every call.
-    pub fn get_policy_id_by_external_ref(env: Env, ext_ref: String) -> Option<u32> {
-        Self::extend_instance_ttl(&env);
-        Self::ext_idx_get(&env, &ext_ref)
-    }
-
     /// Atomically updates a policy's `external_ref` and re-indexes `EXT_IDX`.
     ///
     /// - Removes the old `external_ref` from `EXT_IDX` (if `Some`).
