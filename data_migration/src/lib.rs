@@ -1,3 +1,6 @@
+#![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 //! Data migration, import/export utilities for Remitwise contracts.
 //!
 //! Supports multiple formats (JSON, binary, CSV), checksum validation,

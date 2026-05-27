@@ -3,18 +3,17 @@
 
 use remitwise_common::{CoverageType, EventCategory, EventPriority, RemitwiseEvents};
 use soroban_sdk::{
-    contract, contractimpl, contracterror, contracttype, symbol_short, Address, Env, Map, String,
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, String,
     Symbol, Vec,
 };
 
 #[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum InsuranceError {
     PolicyNotFound = 1,
     Unauthorized = 2,
-    PolicyInactive = 3,
+    PolicyLimitExceeded = 3,
     InvalidExternalRef = 4,
     DuplicateExternalRef = 5,
 }
@@ -58,19 +57,6 @@ const EVT_EXT_REF_UPDATED: Symbol = symbol_short!("ext_upd");
 const KEY_ARCHIVED: Symbol = symbol_short!("ARCH_POL");
 const KEY_STATS: Symbol = symbol_short!("STOR_STAT");
 const KEY_OWNER_ACTIVE: Symbol = symbol_short!("OWN_ACT");
-const KEY_EXT_REF_IDX: Symbol = symbol_short!("EXT_IDX");
-
-/// Errors returned by the Insurance contract.
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum InsuranceError {
-    PolicyNotFound = 1,
-    Unauthorized = 2,
-    PolicyLimitExceeded = 3,
-    InvalidExternalRef = 4,
-    DuplicateExternalRef = 5,
-}
 
 pub const EVT_POLICY_CREATED: Symbol = symbol_short!("created");
 pub const EVT_PREMIUM_PAID: Symbol = symbol_short!("paid");
@@ -183,6 +169,16 @@ impl Insurance {
         }
     }
 
+    fn advance_next_payment_date(current_date: u64, now: u64) -> u64 {
+        // Ensure the next payment date is in the future
+        let next = current_date.saturating_add(PAYMENT_PERIOD_SECONDS);
+        if next > now {
+            next
+        } else {
+            now.saturating_add(PAYMENT_PERIOD_SECONDS)
+        }
+    }
+
     /// Validates that `ext_ref` is between 1 and 128 bytes (inclusive).
     /// Returns `Err(InsuranceError::InvalidExternalRef)` if the length is 0 or > 128.
     fn validate_external_ref(ext_ref: &String) -> Result<(), InsuranceError> {
@@ -226,6 +222,8 @@ impl Insurance {
             .unwrap_or_else(|| Map::new(env));
         idx.remove(ext_ref.clone());
         env.storage().instance().set(&KEY_EXT_REF_IDX, &idx);
+    }
+
     fn read_stats(env: &Env) -> StorageStats {
         env.storage()
             .instance()
@@ -394,7 +392,6 @@ impl Insurance {
         }
 
         env.storage().instance().set(&KEY_NEXT_ID, &next_id);
-        Ok(next_id)
 
         Self::adjust_owner_active(&env, &owner, 1);
         let mut stats = Self::read_stats(&env);
@@ -417,7 +414,7 @@ impl Insurance {
             },
         );
 
-        next_id
+        Ok(next_id)
     }
 
     pub fn get_policy(env: Env, policy_id: u32) -> Option<InsurancePolicy> {
@@ -587,10 +584,6 @@ impl Insurance {
             Self::ext_idx_remove(&env, r);
         }
 
-        policies.remove(policy_id);
-        env.storage().instance().set(&KEY_POLICIES, &policies);
-
-        Ok(true)
         if policy.active {
             policy.active = false;
             policies.set(policy_id, policy.clone());
@@ -616,115 +609,10 @@ impl Insurance {
             );
         }
 
-        true
-    }
-
-    pub fn set_external_ref(
-        env: Env,
-        caller: Address,
-        policy_id: u32,
-        external_ref: Option<String>,
-    ) -> bool {
-        caller.require_auth();
-        Self::extend_instance_ttl(&env);
-
-        let mut policies: Map<u32, InsurancePolicy> = env
-            .storage()
-            .instance()
-            .get(&KEY_POLICIES)
-            .unwrap_or_else(|| Map::new(&env));
-        let mut policy = match policies.get(policy_id) {
-            Some(p) => p,
-            None => return false,
-        };
-        if policy.owner != caller {
-            return false;
-        }
-
-        if let Some(ref r) = external_ref {
-            Self::validate_external_ref(r);
-        }
-
-        if policy.external_ref != external_ref {
-            Self::unbind_external_ref(&env, &caller, policy_id, &policy.external_ref);
-            Self::bind_external_ref(&env, &caller, policy_id, &external_ref);
-            policy.external_ref = external_ref.clone();
-            policies.set(policy_id, policy);
-            env.storage().instance().set(&KEY_POLICIES, &policies);
-
-            RemitwiseEvents::emit(
-                &env,
-                EventCategory::State,
-                EventPriority::Low,
-                EVT_EXT_REF_UPDATED,
-                ExternalRefUpdatedEvent {
-                    policy_id,
-                    owner: caller,
-                    external_ref,
-                    timestamp: env.ledger().timestamp(),
-                },
-            );
-        }
-
-        true
-    }
-
-    pub fn archive_policy(env: Env, caller: Address, policy_id: u32) -> bool {
-        caller.require_auth();
-        Self::extend_instance_ttl(&env);
-
-        let mut policies: Map<u32, InsurancePolicy> = env
-            .storage()
-            .instance()
-            .get(&KEY_POLICIES)
-            .unwrap_or_else(|| Map::new(&env));
-        let mut archived: Map<u32, ArchivedPolicy> = env
-            .storage()
-            .instance()
-            .get(&KEY_ARCHIVED)
-            .unwrap_or_else(|| Map::new(&env));
-
-        let policy = match policies.get(policy_id) {
-            Some(p) => p,
-            None => return false,
-        };
-        if policy.owner != caller {
-            return false;
-        }
-
-        if policy.active {
-            Self::unbind_external_ref(&env, &caller, policy_id, &policy.external_ref);
-            Self::adjust_owner_active(&env, &caller, -1);
-            let mut stats = Self::read_stats(&env);
-            stats.active_policies = stats.active_policies.saturating_sub(1);
-            Self::write_stats(&env, stats);
-        }
-
-        archived.set(
-            policy_id,
-            ArchivedPolicy {
-                id: policy.id,
-                owner: policy.owner,
-                name: policy.name,
-                external_ref: policy.external_ref,
-                coverage_type: policy.coverage_type,
-                monthly_premium: policy.monthly_premium,
-                coverage_amount: policy.coverage_amount,
-                archived_at: env.ledger().timestamp(),
-                next_payment_date: policy.next_payment_date,
-            },
-        );
         policies.remove(policy_id);
-
         env.storage().instance().set(&KEY_POLICIES, &policies);
-        env.storage().instance().set(&KEY_ARCHIVED, &archived);
 
-        let mut stats = Self::read_stats(&env);
-        stats.archived_policies += 1;
-        stats.last_updated = env.ledger().timestamp();
-        Self::write_stats(&env, stats);
-
-        true
+        Ok(true)
     }
 
     pub fn restore_policy(env: Env, caller: Address, policy_id: u32) -> bool {

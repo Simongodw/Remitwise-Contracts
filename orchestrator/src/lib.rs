@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, symbol_short, Address, Env, Symbol, Vec,
