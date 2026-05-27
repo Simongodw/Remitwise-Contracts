@@ -219,6 +219,8 @@ impl Orchestrator {
         if insurance_amt > 0 {
             let i_client = interface::InsuranceClient::new(env, insurance);
             i_client.pay_premium(caller, &policy_id, &insurance_amt);
+        }
+
     /// Initialize the orchestrator with dependency contract addresses.
     ///
     /// # Arguments
